@@ -1,6 +1,12 @@
 "use client";
 
-import { STRETCH_INTERVAL_MS, STRETCH_TIPS } from "@/lib/constants";
+import {
+  INTERVAL_PRESETS,
+  MAX_INTERVAL_MINUTES,
+  MIN_INTERVAL_MINUTES,
+  STRETCH_TIPS,
+  formatIntervalLabel,
+} from "@/lib/constants";
 import { useStretchTimer } from "@/hooks/useStretchTimer";
 
 function formatTime(ms: number) {
@@ -13,10 +19,12 @@ function formatTime(ms: number) {
 function ProgressRing({
   progress,
   remainingMs,
+  intervalMinutes,
   alerting,
 }: {
   progress: number;
   remainingMs: number;
+  intervalMinutes: number;
   alerting: boolean;
 }) {
   const size = 280;
@@ -63,7 +71,66 @@ function ProgressRing({
         >
           {alerting ? "00:00" : formatTime(remainingMs)}
         </span>
-        <span className="mt-2 text-sm text-white/40">every 45 minutes</span>
+        <span className="mt-2 text-sm text-white/40">every {formatIntervalLabel(intervalMinutes)}</span>
+      </div>
+    </div>
+  );
+}
+
+function IntervalPicker({
+  intervalMinutes,
+  onChange,
+  disabled,
+}: {
+  intervalMinutes: number;
+  onChange: (minutes: number) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="mt-8 w-full max-w-sm">
+      <div className="flex items-center justify-between text-sm">
+        <span className="text-white/50">Stretch interval</span>
+        <span className="font-medium text-emerald-400">{formatIntervalLabel(intervalMinutes)}</span>
+      </div>
+
+      <div className="mt-3 flex flex-wrap justify-center gap-2">
+        {INTERVAL_PRESETS.map((preset) => (
+          <button
+            key={preset}
+            type="button"
+            disabled={disabled}
+            onClick={() => onChange(preset)}
+            className={`rounded-full px-4 py-1.5 text-sm transition ${
+              intervalMinutes === preset
+                ? "bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-400/50"
+                : "bg-white/5 text-white/60 hover:bg-white/10 hover:text-white disabled:opacity-40"
+            }`}
+          >
+            {preset}m
+          </button>
+        ))}
+      </div>
+
+      <div className="mt-4 flex items-center gap-3">
+        <input
+          type="range"
+          min={MIN_INTERVAL_MINUTES}
+          max={MAX_INTERVAL_MINUTES}
+          step={5}
+          value={intervalMinutes}
+          disabled={disabled}
+          onChange={(e) => onChange(Number(e.target.value))}
+          className="h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-white/10 accent-emerald-400 disabled:opacity-40"
+        />
+        <input
+          type="number"
+          min={MIN_INTERVAL_MINUTES}
+          max={MAX_INTERVAL_MINUTES}
+          value={intervalMinutes}
+          disabled={disabled}
+          onChange={(e) => onChange(Number(e.target.value))}
+          className="w-16 rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-center text-sm tabular-nums text-white outline-none focus:border-emerald-400/50 disabled:opacity-40"
+        />
       </div>
     </div>
   );
@@ -74,12 +141,15 @@ export default function StretchAlarm() {
     status,
     remainingMs,
     progress,
+    intervalMinutes,
+    cycleDurationMs,
     stretchCount,
     soundEnabled,
     notificationsEnabled,
     tipIndex,
     setSoundEnabled,
     setNotificationsEnabled,
+    setIntervalMinutes,
     start,
     pause,
     resume,
@@ -106,17 +176,24 @@ export default function StretchAlarm() {
             Stretch Alarm
           </p>
           <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white">
-            Move every 45 minutes
+            Move on your schedule
           </h1>
           <p className="mt-2 text-sm text-white/50">
-            Start the timer when you begin work. We&apos;ll nudge you to stand and stretch.
+            Set your interval, start the timer, and we&apos;ll nudge you to stand and stretch.
           </p>
         </header>
 
         <ProgressRing
           progress={isIdle ? 0 : isAlerting ? 1 : progress}
-          remainingMs={isIdle ? STRETCH_INTERVAL_MS : remainingMs}
+          remainingMs={isIdle ? cycleDurationMs : remainingMs}
+          intervalMinutes={intervalMinutes}
           alerting={isAlerting}
+        />
+
+        <IntervalPicker
+          intervalMinutes={intervalMinutes}
+          onChange={setIntervalMinutes}
+          disabled={isAlerting}
         />
 
         <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
@@ -200,7 +277,9 @@ export default function StretchAlarm() {
           <p className="mt-4 text-xs text-white/30">
             {isPaused
               ? `Paused with ${formatTime(remainingMs)} remaining`
-              : "Keep this tab open for reliable reminders"}
+              : isRunning
+                ? "Interval adjusts live — elapsed time is preserved"
+                : "Keep this tab open for reliable reminders"}
           </p>
         )}
       </main>
@@ -220,7 +299,8 @@ export default function StretchAlarm() {
               Time to stretch!
             </h2>
             <p className="mt-2 text-white/60">
-              You&apos;ve been at it for 45 minutes. Take a short break — your body will thank you.
+              You&apos;ve been at it for {formatIntervalLabel(intervalMinutes)}. Take a short break
+              — your body will thank you.
             </p>
 
             <div className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-4">

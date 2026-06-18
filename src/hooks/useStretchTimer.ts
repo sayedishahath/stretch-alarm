@@ -2,9 +2,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  STRETCH_INTERVAL_MS,
+  DEFAULT_INTERVAL_MINUTES,
   STRETCH_TIPS,
   STORAGE_KEY,
+  clampIntervalMinutes,
+  minutesToMs,
   type TimerState,
   type TimerStatus,
 } from "@/lib/constants";
@@ -45,6 +47,11 @@ function playChime() {
 
 export function useStretchTimer() {
   const saved = loadState();
+  const initialInterval = clampIntervalMinutes(
+    saved.intervalMinutes ?? DEFAULT_INTERVAL_MINUTES
+  );
+  const initialCycleMs = saved.cycleDurationMs ?? minutesToMs(initialInterval);
+
   const [status, setStatus] = useState<TimerStatus>(() => {
     if (saved.endTime && saved.status === "running" && saved.endTime > Date.now()) {
       return "running";
@@ -55,11 +62,16 @@ export function useStretchTimer() {
     return (saved.status as TimerStatus) ?? "idle";
   });
   const [endTime, setEndTime] = useState<number | null>(saved.endTime ?? null);
+  const [intervalMinutes, setIntervalMinutesState] = useState(initialInterval);
+  const [cycleDurationMs, setCycleDurationMs] = useState(initialCycleMs);
   const [remainingMs, setRemainingMs] = useState(() => {
     if (saved.endTime && saved.status === "running") {
       return Math.max(0, saved.endTime - Date.now());
     }
-    return STRETCH_INTERVAL_MS;
+    if (saved.status === "paused" && saved.remainingMs != null) {
+      return saved.remainingMs;
+    }
+    return minutesToMs(initialInterval);
   });
   const [stretchCount, setStretchCount] = useState(saved.stretchCount ?? 0);
   const [soundEnabled, setSoundEnabled] = useState(saved.soundEnabled ?? true);
@@ -74,6 +86,9 @@ export function useStretchTimer() {
       const next: TimerState = {
         status,
         endTime,
+        remainingMs,
+        cycleDurationMs,
+        intervalMinutes,
         stretchCount,
         soundEnabled,
         notificationsEnabled,
@@ -81,7 +96,16 @@ export function useStretchTimer() {
       };
       saveState(next);
     },
-    [status, endTime, stretchCount, soundEnabled, notificationsEnabled]
+    [
+      status,
+      endTime,
+      remainingMs,
+      cycleDurationMs,
+      intervalMinutes,
+      stretchCount,
+      soundEnabled,
+      notificationsEnabled,
+    ]
   );
 
   const triggerAlert = useCallback(async () => {
@@ -96,18 +120,18 @@ export function useStretchTimer() {
       try {
         playChime();
       } catch {
-        /* audio blocked until user gesture — already started via button */
+        /* audio blocked until user gesture */
       }
     }
 
     if (notificationsEnabled && "Notification" in window && Notification.permission === "granted") {
       new Notification("Time to stretch!", {
-        body: "You've been sitting for 45 minutes. Stand up and move for a minute.",
+        body: `You've been sitting for ${intervalMinutes} minutes. Stand up and move for a minute.`,
         icon: "/icon.svg",
         tag: "stretch-alarm",
       });
     }
-  }, [soundEnabled, notificationsEnabled, persist]);
+  }, [soundEnabled, notificationsEnabled, intervalMinutes, persist]);
 
   useEffect(() => {
     if (status !== "running" || !endTime) return;
@@ -129,7 +153,17 @@ export function useStretchTimer() {
 
   useEffect(() => {
     persist({});
-  }, [status, endTime, stretchCount, soundEnabled, notificationsEnabled, persist]);
+  }, [
+    status,
+    endTime,
+    remainingMs,
+    cycleDurationMs,
+    intervalMinutes,
+    stretchCount,
+    soundEnabled,
+    notificationsEnabled,
+    persist,
+  ]);
 
   const requestNotifications = async () => {
     if (!("Notification" in window)) return false;
@@ -144,18 +178,20 @@ export function useStretchTimer() {
     if (notificationsEnabled) {
       await requestNotifications();
     }
-    const nextEnd = Date.now() + STRETCH_INTERVAL_MS;
+    const duration = minutesToMs(intervalMinutes);
+    const nextEnd = Date.now() + duration;
+    setCycleDurationMs(duration);
     setEndTime(nextEnd);
-    setRemainingMs(STRETCH_INTERVAL_MS);
+    setRemainingMs(duration);
     setStatus("running");
-    persist({ status: "running", endTime: nextEnd });
+    persist({ status: "running", endTime: nextEnd, cycleDurationMs: duration });
   };
 
   const pause = () => {
     if (status !== "running") return;
     setStatus("paused");
     setEndTime(null);
-    persist({ status: "paused", endTime: null });
+    persist({ status: "paused", endTime: null, cycleDurationMs, remainingMs });
   };
 
   const resume = async () => {
@@ -164,48 +200,93 @@ export function useStretchTimer() {
     const nextEnd = Date.now() + remainingMs;
     setEndTime(nextEnd);
     setStatus("running");
-    persist({ status: "running", endTime: nextEnd });
+    persist({ status: "running", endTime: nextEnd, cycleDurationMs });
   };
 
   const reset = () => {
     alertedRef.current = false;
+    const duration = minutesToMs(intervalMinutes);
     setStatus("idle");
     setEndTime(null);
-    setRemainingMs(STRETCH_INTERVAL_MS);
-    persist({ status: "idle", endTime: null });
+    setCycleDurationMs(duration);
+    setRemainingMs(duration);
+    persist({ status: "idle", endTime: null, cycleDurationMs: duration });
   };
 
   const acknowledgeStretch = () => {
     alertedRef.current = false;
-    const nextEnd = Date.now() + STRETCH_INTERVAL_MS;
+    const duration = minutesToMs(intervalMinutes);
+    const nextEnd = Date.now() + duration;
     setStretchCount((c) => {
       const next = c + 1;
       saveState({
         status: "running",
         endTime: nextEnd,
+        remainingMs: duration,
+        cycleDurationMs: duration,
+        intervalMinutes,
         stretchCount: next,
         soundEnabled,
         notificationsEnabled,
       });
       return next;
     });
+    setCycleDurationMs(duration);
     setEndTime(nextEnd);
-    setRemainingMs(STRETCH_INTERVAL_MS);
+    setRemainingMs(duration);
     setStatus("running");
   };
 
-  const progress = 1 - remainingMs / STRETCH_INTERVAL_MS;
+  const setIntervalMinutes = (minutes: number) => {
+    const clamped = clampIntervalMinutes(minutes);
+    const newMs = minutesToMs(clamped);
+    const elapsed = cycleDurationMs - remainingMs;
+    const newRemaining = Math.max(0, newMs - elapsed);
+
+    setIntervalMinutesState(clamped);
+
+    if (status === "running" || status === "paused") {
+      setCycleDurationMs(newMs);
+      if (newRemaining === 0 && status === "running") {
+        void triggerAlert();
+        persist({ intervalMinutes: clamped, cycleDurationMs: newMs });
+        return;
+      }
+      setRemainingMs(newRemaining);
+      if (status === "running") {
+        const nextEnd = Date.now() + newRemaining;
+        setEndTime(nextEnd);
+        persist({
+          intervalMinutes: clamped,
+          cycleDurationMs: newMs,
+          remainingMs: newRemaining,
+          endTime: nextEnd,
+        });
+      } else {
+        persist({ intervalMinutes: clamped, cycleDurationMs: newMs, remainingMs: newRemaining });
+      }
+    } else {
+      setCycleDurationMs(newMs);
+      setRemainingMs(newMs);
+      persist({ intervalMinutes: clamped, cycleDurationMs: newMs, remainingMs: newMs });
+    }
+  };
+
+  const progress = cycleDurationMs > 0 ? 1 - remainingMs / cycleDurationMs : 0;
 
   return {
     status,
     remainingMs,
     progress,
+    intervalMinutes,
+    cycleDurationMs,
     stretchCount,
     soundEnabled,
     notificationsEnabled,
     tipIndex,
     setSoundEnabled,
     setNotificationsEnabled,
+    setIntervalMinutes,
     start,
     pause,
     resume,
