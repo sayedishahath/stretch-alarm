@@ -10,6 +10,7 @@ import {
   type TimerState,
   type TimerStatus,
 } from "@/lib/constants";
+import { startAlarm, stopAlarm, unlockAudio } from "@/lib/alarmSound";
 
 function loadState(): Partial<TimerState> {
   if (typeof window === "undefined") return {};
@@ -24,25 +25,6 @@ function loadState(): Partial<TimerState> {
 function saveState(state: TimerState) {
   if (typeof window === "undefined") return;
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-}
-
-function playChime() {
-  const ctx = new AudioContext();
-  const notes = [523.25, 659.25, 783.99];
-
-  notes.forEach((freq, i) => {
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = "sine";
-    osc.frequency.value = freq;
-    gain.gain.setValueAtTime(0, ctx.currentTime + i * 0.18);
-    gain.gain.linearRampToValueAtTime(0.22, ctx.currentTime + i * 0.18 + 0.04);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.18 + 0.55);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start(ctx.currentTime + i * 0.18);
-    osc.stop(ctx.currentTime + i * 0.18 + 0.6);
-  });
 }
 
 export function useStretchTimer() {
@@ -116,14 +98,6 @@ export function useStretchTimer() {
     setTipIndex(Math.floor(Math.random() * STRETCH_TIPS.length));
     persist({ status: "alerting", endTime: null });
 
-    if (soundEnabled) {
-      try {
-        playChime();
-      } catch {
-        /* audio blocked until user gesture */
-      }
-    }
-
     if (notificationsEnabled && "Notification" in window && Notification.permission === "granted") {
       new Notification("Time to stretch!", {
         body: `You've been sitting for ${intervalMinutes} minutes. Stand up and move for a minute.`,
@@ -132,6 +106,19 @@ export function useStretchTimer() {
       });
     }
   }, [soundEnabled, notificationsEnabled, intervalMinutes, persist]);
+
+  useEffect(() => {
+    return () => stopAlarm();
+  }, []);
+
+  useEffect(() => {
+    if (status !== "alerting") return;
+    if (soundEnabled) {
+      void unlockAudio().then(() => startAlarm());
+    } else {
+      stopAlarm();
+    }
+  }, [status, soundEnabled]);
 
   useEffect(() => {
     if (status !== "running" || !endTime) return;
@@ -175,6 +162,8 @@ export function useStretchTimer() {
 
   const start = async () => {
     alertedRef.current = false;
+    stopAlarm();
+    await unlockAudio();
     if (notificationsEnabled) {
       await requestNotifications();
     }
@@ -189,6 +178,7 @@ export function useStretchTimer() {
 
   const pause = () => {
     if (status !== "running") return;
+    stopAlarm();
     setStatus("paused");
     setEndTime(null);
     persist({ status: "paused", endTime: null, cycleDurationMs, remainingMs });
@@ -197,6 +187,8 @@ export function useStretchTimer() {
   const resume = async () => {
     if (status !== "paused") return;
     alertedRef.current = false;
+    stopAlarm();
+    await unlockAudio();
     const nextEnd = Date.now() + remainingMs;
     setEndTime(nextEnd);
     setStatus("running");
@@ -205,6 +197,7 @@ export function useStretchTimer() {
 
   const reset = () => {
     alertedRef.current = false;
+    stopAlarm();
     const duration = minutesToMs(intervalMinutes);
     setStatus("idle");
     setEndTime(null);
@@ -215,6 +208,7 @@ export function useStretchTimer() {
 
   const acknowledgeStretch = () => {
     alertedRef.current = false;
+    stopAlarm();
     const duration = minutesToMs(intervalMinutes);
     const nextEnd = Date.now() + duration;
     setStretchCount((c) => {
@@ -238,6 +232,8 @@ export function useStretchTimer() {
   };
 
   const setIntervalMinutes = (minutes: number) => {
+    if (status === "running" || status === "alerting") return;
+
     const clamped = clampIntervalMinutes(minutes);
     const newMs = minutesToMs(clamped);
     const elapsed = cycleDurationMs - remainingMs;
@@ -245,26 +241,10 @@ export function useStretchTimer() {
 
     setIntervalMinutesState(clamped);
 
-    if (status === "running" || status === "paused") {
+    if (status === "paused") {
       setCycleDurationMs(newMs);
-      if (newRemaining === 0 && status === "running") {
-        void triggerAlert();
-        persist({ intervalMinutes: clamped, cycleDurationMs: newMs });
-        return;
-      }
       setRemainingMs(newRemaining);
-      if (status === "running") {
-        const nextEnd = Date.now() + newRemaining;
-        setEndTime(nextEnd);
-        persist({
-          intervalMinutes: clamped,
-          cycleDurationMs: newMs,
-          remainingMs: newRemaining,
-          endTime: nextEnd,
-        });
-      } else {
-        persist({ intervalMinutes: clamped, cycleDurationMs: newMs, remainingMs: newRemaining });
-      }
+      persist({ intervalMinutes: clamped, cycleDurationMs: newMs, remainingMs: newRemaining });
     } else {
       setCycleDurationMs(newMs);
       setRemainingMs(newMs);

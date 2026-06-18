@@ -81,17 +81,25 @@ function IntervalPicker({
   intervalMinutes,
   onChange,
   disabled,
+  locked,
 }: {
   intervalMinutes: number;
   onChange: (minutes: number) => void;
   disabled?: boolean;
+  locked?: boolean;
 }) {
   return (
-    <div className="mt-8 w-full max-w-sm">
+    <div className={`mt-8 w-full max-w-sm ${disabled ? "opacity-60" : ""}`}>
       <div className="flex items-center justify-between text-sm">
         <span className="text-white/50">Stretch interval</span>
         <span className="font-medium text-emerald-400">{formatIntervalLabel(intervalMinutes)}</span>
       </div>
+
+      {locked && (
+        <p className="mt-2 text-xs text-white/40">
+          Interval is locked while the timer is running. Pause or stop to change it.
+        </p>
+      )}
 
       <div className="mt-3 flex flex-wrap justify-center gap-2">
         {INTERVAL_PRESETS.map((preset) => (
@@ -193,7 +201,8 @@ export default function StretchAlarm() {
         <IntervalPicker
           intervalMinutes={intervalMinutes}
           onChange={setIntervalMinutes}
-          disabled={isAlerting}
+          disabled={isRunning || isAlerting}
+          locked={isRunning}
         />
 
         <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
@@ -277,9 +286,7 @@ export default function StretchAlarm() {
           <p className="mt-4 text-xs text-white/30">
             {isPaused
               ? `Paused with ${formatTime(remainingMs)} remaining`
-              : isRunning
-                ? "Interval adjusts live — elapsed time is preserved"
-                : "Keep this tab open for reliable reminders"}
+              : "Keep this tab open for reliable reminders"}
           </p>
         )}
       </main>
@@ -315,7 +322,7 @@ export default function StretchAlarm() {
               onClick={acknowledgeStretch}
               className="mt-8 w-full rounded-full bg-amber-400 py-3.5 text-sm font-semibold text-amber-950 transition hover:bg-amber-300"
             >
-              I stretched — restart timer
+              I stretched — stop alarm & restart
             </button>
           </div>
         </div>
