@@ -27,68 +27,78 @@ function saveState(state: TimerState) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
-export function useStretchTimer() {
-  const saved = loadState();
-  const initialInterval = clampIntervalMinutes(
+function resolveSaved(saved: Partial<TimerState>): TimerState {
+  const intervalMinutes = clampIntervalMinutes(
     saved.intervalMinutes ?? DEFAULT_INTERVAL_MINUTES
   );
-  const initialCycleMs = saved.cycleDurationMs ?? minutesToMs(initialInterval);
+  const cycleDurationMs = saved.cycleDurationMs ?? minutesToMs(intervalMinutes);
 
-  const [status, setStatus] = useState<TimerStatus>(() => {
-    if (saved.endTime && saved.status === "running" && saved.endTime > Date.now()) {
-      return "running";
-    }
-    if (saved.endTime && saved.status === "running" && saved.endTime <= Date.now()) {
-      return "alerting";
-    }
-    return (saved.status as TimerStatus) ?? "idle";
-  });
-  const [endTime, setEndTime] = useState<number | null>(saved.endTime ?? null);
-  const [intervalMinutes, setIntervalMinutesState] = useState(initialInterval);
+  let status: TimerStatus = (saved.status as TimerStatus) ?? "idle";
+  if (saved.endTime && saved.status === "running" && saved.endTime > Date.now()) {
+    status = "running";
+  } else if (saved.endTime && saved.status === "running" && saved.endTime <= Date.now()) {
+    status = "alerting";
+  }
+
+  let remainingMs = minutesToMs(intervalMinutes);
+  if (saved.endTime && saved.status === "running") {
+    remainingMs = Math.max(0, saved.endTime - Date.now());
+  } else if (saved.status === "paused" && saved.remainingMs != null) {
+    remainingMs = saved.remainingMs;
+  }
+
+  return {
+    status,
+    endTime: saved.endTime ?? null,
+    remainingMs,
+    cycleDurationMs,
+    intervalMinutes,
+    stretchCount: saved.stretchCount ?? 0,
+    soundEnabled: saved.soundEnabled ?? true,
+    notificationsEnabled: saved.notificationsEnabled ?? true,
+  };
+}
+
+export function useStretchTimer() {
+  const initialCycleMs = minutesToMs(DEFAULT_INTERVAL_MINUTES);
+
+  const [status, setStatus] = useState<TimerStatus>("idle");
+  const [endTime, setEndTime] = useState<number | null>(null);
+  const [intervalMinutes, setIntervalMinutesState] = useState(DEFAULT_INTERVAL_MINUTES);
   const [cycleDurationMs, setCycleDurationMs] = useState(initialCycleMs);
-  const [remainingMs, setRemainingMs] = useState(() => {
-    if (saved.endTime && saved.status === "running") {
-      return Math.max(0, saved.endTime - Date.now());
-    }
-    if (saved.status === "paused" && saved.remainingMs != null) {
-      return saved.remainingMs;
-    }
-    return minutesToMs(initialInterval);
-  });
-  const [stretchCount, setStretchCount] = useState(saved.stretchCount ?? 0);
-  const [soundEnabled, setSoundEnabled] = useState(saved.soundEnabled ?? true);
-  const [notificationsEnabled, setNotificationsEnabled] = useState(
-    saved.notificationsEnabled ?? true
-  );
+  const [remainingMs, setRemainingMs] = useState(initialCycleMs);
+  const [stretchCount, setStretchCount] = useState(0);
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+  const [ready, setReady] = useState(false);
   const [tipIndex, setTipIndex] = useState(0);
   const alertedRef = useRef(false);
+  const stateRef = useRef<TimerState>({
+    status,
+    endTime,
+    remainingMs,
+    cycleDurationMs,
+    intervalMinutes,
+    stretchCount,
+    soundEnabled,
+    notificationsEnabled,
+  });
+  stateRef.current = {
+    status,
+    endTime,
+    remainingMs,
+    cycleDurationMs,
+    intervalMinutes,
+    stretchCount,
+    soundEnabled,
+    notificationsEnabled,
+  };
 
-  const persist = useCallback(
-    (patch: Partial<TimerState>) => {
-      const next: TimerState = {
-        status,
-        endTime,
-        remainingMs,
-        cycleDurationMs,
-        intervalMinutes,
-        stretchCount,
-        soundEnabled,
-        notificationsEnabled,
-        ...patch,
-      };
-      saveState(next);
-    },
-    [
-      status,
-      endTime,
-      remainingMs,
-      cycleDurationMs,
-      intervalMinutes,
-      stretchCount,
-      soundEnabled,
-      notificationsEnabled,
-    ]
-  );
+  const persist = useCallback((patch: Partial<TimerState>) => {
+    const next: TimerState = { ...stateRef.current, ...patch };
+    stateRef.current = next;
+    saveState(next);
+  }, []);
 
   const triggerAlert = useCallback(async () => {
     if (alertedRef.current) return;
@@ -96,16 +106,30 @@ export function useStretchTimer() {
     setStatus("alerting");
     setRemainingMs(0);
     setTipIndex(Math.floor(Math.random() * STRETCH_TIPS.length));
-    persist({ status: "alerting", endTime: null });
+    persist({ status: "alerting", endTime: null, remainingMs: 0 });
 
-    if (notificationsEnabled && "Notification" in window && Notification.permission === "granted") {
+    const { notificationsEnabled: notify, intervalMinutes: minutes } = stateRef.current;
+    if (notify && "Notification" in window && Notification.permission === "granted") {
       new Notification("Time to stretch!", {
-        body: `You've been sitting for ${intervalMinutes} minutes. Stand up and move for a minute.`,
+        body: `You've been sitting for ${minutes} minutes. Stand up and move for a minute.`,
         icon: "/icon.svg",
         tag: "stretch-alarm",
       });
     }
-  }, [soundEnabled, notificationsEnabled, intervalMinutes, persist]);
+  }, [persist]);
+
+  useEffect(() => {
+    const next = resolveSaved(loadState());
+    setStatus(next.status);
+    setEndTime(next.endTime);
+    setIntervalMinutesState(next.intervalMinutes);
+    setCycleDurationMs(next.cycleDurationMs);
+    setRemainingMs(next.remainingMs);
+    setStretchCount(next.stretchCount);
+    setSoundEnabled(next.soundEnabled);
+    setNotificationsEnabled(next.notificationsEnabled);
+    setReady(true);
+  }, []);
 
   useEffect(() => {
     return () => stopAlarm();
@@ -139,11 +163,12 @@ export function useStretchTimer() {
   }, [status, endTime, triggerAlert]);
 
   useEffect(() => {
+    if (!ready) return;
     persist({});
   }, [
+    ready,
     status,
     endTime,
-    remainingMs,
     cycleDurationMs,
     intervalMinutes,
     stretchCount,
